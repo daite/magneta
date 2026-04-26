@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use config::{Config, Value};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::warn;
+use magneta::http::{build_client, validate_base_url};
 use prettytable::{format, row, Table};
-use reqwest;
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
@@ -143,40 +143,37 @@ async fn main() -> anyhow::Result<()> {
             table.set_titles(row!["Site Name", "Site URL", "Status"]);
             table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
-            let client = reqwest::Client::new();
-            let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; xhtml,application/xml;q=0.9,image/webp,*/*;q=0.8)";
+            let client = build_client()?;
 
             for (site_name, site_config) in config_map {
-                if let Some(table_val) = site_config.into_table().ok() {
+                if let Ok(table_val) = site_config.into_table() {
                     if let Some(url) = table_val
                         .get("base_url")
                         .and_then(|v| v.clone().into_string().ok())
                     {
-                        let status = match client
-                            .get(&url)
-                            .header("User-Agent", user_agent)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => {
-                                format!("✅ {}", resp.status())
-                            }
-                            Ok(resp) => format!("⚠️ {}", resp.status()),
-                            Err(err) => {
-                                if err.is_connect() {
-                                    "❌ connection failed".to_string()
-                                } else if err.is_timeout() {
-                                    "⏱️ timeout".to_string()
-                                } else {
-                                    format!(
-                                        "❌ {}",
-                                        err.to_string()
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or("unknown error")
-                                    )
+                        let status = match validate_base_url(&url) {
+                            Ok(url) => match client.get(url).send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    format!("✅ {}", resp.status())
                                 }
-                            }
+                                Ok(resp) => format!("⚠️ {}", resp.status()),
+                                Err(err) => {
+                                    if err.is_connect() {
+                                        "❌ connection failed".to_string()
+                                    } else if err.is_timeout() {
+                                        "⏱️ timeout".to_string()
+                                    } else {
+                                        format!(
+                                            "❌ {}",
+                                            err.to_string()
+                                                .split(':')
+                                                .next()
+                                                .unwrap_or("unknown error")
+                                        )
+                                    }
+                                }
+                            },
+                            Err(err) => format!("❌ {err}"),
                         };
                         table.add_row(row![site_name, url, status]);
                     } else {
